@@ -2840,7 +2840,7 @@ ncclResult_t anpNetFlush(void* recvComm, int n, void** data, int* sizes, void** 
   return ncclSuccess;
 }
 
-#define ANP_CQ_POLL_MAX_EVENT        16
+#define ANP_CQ_POLL_MAX_EVENT        128
 #define HCA_NAME(req, index) ((req)->devBases[(index)]->pd->context->device->name)
 
 ncclResult_t anpNetTest(void* request, int* done, int* sizes) {
