@@ -31,6 +31,11 @@ else
     CFLAGS+= -UANP_TELEMETRY_ENABLED
 endif
 
+ifeq ($(ENABLE_NPKIT), 1)
+    CFLAGS+= -DENABLE_NPKIT
+    SRCS += $(RCCL_BUILD)/hipify/src/misc/npkit.cc
+endif
+
 # Require RCCL_HOME unless target is clean/help/uninstall
 ifneq ($(filter clean help uninstall,$(MAKECMDGOALS)),)
     # Skip checks

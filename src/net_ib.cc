@@ -30,6 +30,9 @@
 #include <x86intrin.h>
 #include <dlfcn.h>
 #include "net.h"
+#if defined(ENABLE_NPKIT)
+#include "npkit/npkit.h"
+#endif
 #include "timer.h"
 #include <sys/utsname.h>
 #include "anp_ibvwrap.h"
@@ -1243,8 +1246,8 @@ struct ncclIbQp {
   int devIndex;
   int remDevIdx;
   int8_t ctsQpSlot;
-#ifdef ANP_DEBUG_TRACE_EN
   uint16_t channelId;
+#ifdef ANP_DEBUG_TRACE_EN
   uint8_t data;
 #endif
 };
@@ -1279,6 +1282,7 @@ struct alignas(32) ncclIbNetCommBase {
   int nqps;
   int qpIndex;
   int devIndex;
+  int channelId;  // RCCL channel ID for NPKIT profiling
   struct ncclSocket sock;
   int ready;
   // Track necessary remDevInfo here
@@ -1596,6 +1600,7 @@ ncclResult_t anpNetConnect(int dev, ncclNetCommConfig_t* config, void* opaqueHan
   NCCLCHECK(ncclIbMalloc((void**)&comm, sizeof(struct ncclIbSendComm)));
   NCCLCHECKGOTO(ncclIbStatsInit(&comm->base.stats), ret, fail);
   NCCLCHECKGOTO(ncclSocketInit(&comm->base.sock, &handle->connectAddr, handle->magic, ncclSocketTypeNetIb, NULL, 1), ret, fail);
+  comm->base.channelId = channelId;  // Store channel ID for NPKIT profiling
   stage->comm = comm;
   stage->state = ncclIbCommStateConnect;
   NCCLCHECKGOTO(ncclSocketConnect(&comm->base.sock), ret, fail);
@@ -1898,6 +1903,7 @@ ncclResult_t anpNetAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle
 
   NCCLCHECK(ncclIbMalloc((void**)&rComm, sizeof(struct ncclIbRecvComm)));
   NCCLCHECKGOTO(ncclIbStatsInit(&rComm->base.stats), ret, fail);
+  rComm->base.channelId = channelId;  // Store channel ID for NPKIT profiling
   stage->comm = rComm;
   stage->state = ncclIbCommStateAccept;
   NCCLCHECKGOTO(ncclSocketInit(&rComm->base.sock), ret, fail);
@@ -2868,9 +2874,32 @@ ncclResult_t anpNetTest(void* request, int* done, int* sizes) {
     for (int i = 0; i < NCCL_IB_MAX_DEVS_PER_NIC; i++) {
       TIME_START(3);
       // If we expect any completions from this device's CQ
-      if (r->events[i]) {
-        NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, ANP_CQ_POLL_MAX_EVENT,
-                                   wcs, &wrDone));
+      if (r->events[i]) 
+      {  
+#if defined(ENABLE_NPKIT)
+        uint64_t* POLL_CQ_timestamp_entry = NpKit::GetCpuTimestamp();
+        if (POLL_CQ_timestamp_entry != nullptr) 
+        {
+          NpKit::CollectCpuEvent(NPKIT_EVENT_NET_POLL_CQ_ENTRY, wrDone, 0, *(volatile uint64_t*)POLL_CQ_timestamp_entry, r->base->channelId);
+        } else 
+        {
+          static bool npkit_warning_shown = false;
+          if (!npkit_warning_shown) 
+          {
+            WARN("NPKit is enabled but not initialized - network events will not be collected");
+            npkit_warning_shown = true;
+          }
+        }
+#endif
+        NCCLCHECK(wrap_ibv_poll_cq(r->devBases[i]->cq, ANP_CQ_POLL_MAX_EVENT, wcs, &wrDone));
+#if defined(ENABLE_NPKIT)
+        POLL_CQ_timestamp_exit = NpKit::GetCpuTimestamp();
+        if (POLL_CQ_timestamp_exit != nullptr) 
+        {
+          NpKit::CollectCpuEvent(NPKIT_EVENT_NET_POLL_CQ_EXIT, wrDone, 0, *(volatile uint64_t*)POLL_CQ_timestamp_exit, r->base->channelId);
+        }
+#endif
+        
         totalWrDone += wrDone;
         ANP_TELEMETRY_EXECUTE(
             g_anp_state.update_cq_poll_metrics();
